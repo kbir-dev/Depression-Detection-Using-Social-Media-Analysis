@@ -3,48 +3,82 @@ import plotly.graph_objects as go
 import pandas as pd
 import time
 import numpy as np
-import tensorflow as tf
-import spacy
-import pickle
 import re
 import string
-from bs4 import BeautifulSoup
-import nltk
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from gensim.models import Word2Vec
 import logging
 import os
 import io
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pickle
 from typing import List, Dict
+from bs4 import BeautifulSoup
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set environment variable to control TensorFlow logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=no INFO, 2=no INFO/WARNING, 3=no INFO/WARNING/ERROR
+
+# Flag to track if we're in fallback mode
+FALLBACK_MODE = False
+
+# Try importing TensorFlow and other ML libraries
+try:
+    import tensorflow as tf
+    from tensorflow.keras.preprocessing.sequence import pad_sequences
+    import spacy
+    import nltk
+    from nltk.tokenize import word_tokenize
+    from nltk.corpus import stopwords
+    from nltk.stem import WordNetLemmatizer
+    from gensim.models import Word2Vec
+    st.sidebar.success("✅ All ML libraries loaded successfully")
+except ImportError as e:
+    FALLBACK_MODE = True
+    st.sidebar.error(f"⚠️ Error loading ML libraries: {str(e)}")
+    st.sidebar.warning("Running in fallback mode with limited functionality")
+
 # Download required NLTK resources on app startup
 @st.cache_resource
 def download_nltk_resources():
-    nltk.download('punkt')
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    return "NLTK resources downloaded"
+    if not FALLBACK_MODE:
+        try:
+            nltk.download('punkt')
+            nltk.download('stopwords')
+            nltk.download('wordnet')
+            return "NLTK resources downloaded"
+        except Exception as e:
+            logger.error(f"Error downloading NLTK resources: {str(e)}")
+            return f"Error: {str(e)}"
+    return "Skipped in fallback mode"
 
 # Load spaCy model
 @st.cache_resource
 def load_spacy_model():
+    if FALLBACK_MODE:
+        return None
+        
     try:
         return spacy.load("en_core_web_sm")
-    except OSError:
-        st.error("Error loading spaCy model. Make sure to run: python -m spacy download en_core_web_sm")
-        st.stop()
+    except OSError as e:
+        logger.error(f"Error loading spaCy model: {str(e)}")
+        st.warning("Could not load spaCy model. Some features will be limited.")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error loading spaCy model: {str(e)}")
+        return None
 
 # Initialize lemmatizer
 @st.cache_resource
 def get_lemmatizer():
-    return WordNetLemmatizer()
+    if FALLBACK_MODE:
+        return None
+        
+    try:
+        return WordNetLemmatizer()
+    except Exception as e:
+        logger.error(f"Error initializing lemmatizer: {str(e)}")
+        return None
 
 # Define a constant
 DEPRESSION_THRESHOLD = 0.58
@@ -52,47 +86,84 @@ DEPRESSION_THRESHOLD = 0.58
 # Load models
 @st.cache_resource
 def load_models():
+    if FALLBACK_MODE:
+        return {
+            "fallback": True,
+            "active_model_name": "fallback",
+            "model_version": "Fallback mode - models not loaded"
+        }
+        
     try:
         # Define model paths
         models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", "models")
+        
+        # Check if models directory exists
+        if not os.path.exists(models_dir):
+            st.warning(f"Models directory not found at {models_dir}")
+            return {"fallback": True, "active_model_name": "fallback", "model_version": "Models directory not found"}
         
         lstm_model_path = os.path.join(models_dir, "final_lstm_model.keras")
         gru_model_path = os.path.join(models_dir, "final_gru_model.keras")
         word2vec_path = os.path.join(models_dir, "word2vec_model.bin") 
         vectorizer_path = os.path.join(models_dir, "vectorizer.pkl")
+        
+        # Check if all model files exist
+        missing_files = []
+        for path in [lstm_model_path, gru_model_path, word2vec_path, vectorizer_path]:
+            if not os.path.exists(path):
+                missing_files.append(os.path.basename(path))
+        
+        if missing_files:
+            st.warning(f"Missing model files: {', '.join(missing_files)}")
+            return {"fallback": True, "active_model_name": "fallback", "model_version": "Missing model files"}
 
-        # Load both models
-        lstm_model = tf.keras.models.load_model(lstm_model_path)
-        gru_model = tf.keras.models.load_model(gru_model_path)
-        
-        # Default model to use
-        active_model = lstm_model
-        active_model_name = "lstm"
-        
-        # Get model version or creation date
-        model_stats = os.stat(lstm_model_path)
-        model_date = model_stats.st_mtime
-        MODEL_VERSION = f"Model date: {pd.to_datetime(model_date, unit='s')}"
+        # Load vectorizer first (smallest file)
+        with open(vectorizer_path, 'rb') as f:
+            vectorizer = pickle.load(f)
         
         # Load word2vec model
         word2vec_model = Word2Vec.load(word2vec_path)
         
-        # Load vectorizer
-        with open(vectorizer_path, 'rb') as f:
-            vectorizer = pickle.load(f)
+        # Load TensorFlow models
+        try:
+            lstm_model = tf.keras.models.load_model(lstm_model_path)
+            gru_model = tf.keras.models.load_model(gru_model_path)
             
-        return {
-            "lstm_model": lstm_model,
-            "gru_model": gru_model,
-            "word2vec_model": word2vec_model,
-            "vectorizer": vectorizer,
-            "active_model": active_model,
-            "active_model_name": active_model_name,
-            "model_version": MODEL_VERSION
-        }
+            # Default model to use
+            active_model = lstm_model
+            active_model_name = "lstm"
+            
+            # Get model version or creation date
+            model_stats = os.stat(lstm_model_path)
+            model_date = model_stats.st_mtime
+            MODEL_VERSION = f"Model date: {pd.to_datetime(model_date, unit='s')}"
+            
+            return {
+                "lstm_model": lstm_model,
+                "gru_model": gru_model,
+                "word2vec_model": word2vec_model,
+                "vectorizer": vectorizer,
+                "active_model": active_model,
+                "active_model_name": active_model_name,
+                "model_version": MODEL_VERSION,
+                "fallback": False
+            }
+        except Exception as e:
+            logger.error(f"Error loading TensorFlow models: {str(e)}")
+            st.warning(f"Could not load TensorFlow models: {str(e)}")
+            return {
+                "word2vec_model": word2vec_model,
+                "vectorizer": vectorizer,
+                "active_model_name": "fallback",
+                "model_version": f"Error loading TensorFlow models: {str(e)}",
+                "fallback": True
+            }
+            
     except Exception as e:
-        st.error(f"Error loading models: {str(e)}")
-        st.stop()
+        logger.error(f"Error loading models: {str(e)}")
+        st.warning(f"Error loading models: {str(e)}")
+        return {"fallback": True, "active_model_name": "fallback", "model_version": f"Error: {str(e)}"}
+
 
 def cleanText(text):
     """
@@ -362,6 +433,99 @@ def predict_depression_paragraph(paragraph, model_type="lstm", models=None, nlp=
         'model_used': sentence_predictions[0]['model'] if sentence_predictions else model_type
     }
 
+def simulate_analysis(message, model_type):
+    """
+    Simulate text analysis when running in fallback mode
+    """
+    # Check if message is empty or too short
+    if not message or len(message.strip()) < 10:
+        return {
+            "message": message,
+            "prediction": "Insufficient data for analysis",
+            "probability": 0.0,
+            "average_score": 0.0,
+            "confidence": "None",
+            "sentence_analysis": [],
+            "model_used": "fallback"
+        }
+    
+    # Use simple heuristics to simulate depression detection
+    # This is just a placeholder and not a real depression detection algorithm
+    depression_keywords = [
+        "sad", "depressed", "unhappy", "miserable", "hopeless", "worthless",
+        "tired", "exhausted", "lonely", "alone", "suicide", "die", "death",
+        "crying", "tears", "pain", "hurt", "suffering", "anxiety", "worried"
+    ]
+    
+    # Count depression keywords
+    message_lower = message.lower()
+    keyword_count = sum(1 for keyword in depression_keywords if keyword in message_lower)
+    
+    # Simple sentence splitting
+    sentences = [s.strip() for s in re.split(r'[.!?]+', message) if s.strip()]
+    
+    # Calculate a simulated probability based on keyword density
+    total_words = len(message_lower.split())
+    if total_words > 0:
+        base_probability = min(0.9, keyword_count / (total_words * 0.3))
+    else:
+        base_probability = 0.0
+    
+    # Add some randomness to make it look more realistic
+    import random
+    probability = min(0.95, max(0.05, base_probability + random.uniform(-0.1, 0.1)))
+    
+    # Determine overall result based on the threshold
+    is_depressed = probability > DEPRESSION_THRESHOLD
+    prediction_text = "Potentially Depressed" if is_depressed else "Not Depressed"
+    emoji = "😞" if is_depressed else "🙂"
+    
+    # Generate simulated sentence analysis
+    sentence_analysis = []
+    for sentence in sentences:
+        if len(sentence.split()) < 3:  # Skip very short sentences
+            continue
+            
+        # Calculate sentence-level probability
+        sentence_lower = sentence.lower()
+        sentence_keyword_count = sum(1 for keyword in depression_keywords if keyword in sentence_lower)
+        sentence_words = len(sentence_lower.split())
+        if sentence_words > 0:
+            sentence_probability = min(0.95, max(0.05, sentence_keyword_count / (sentence_words * 0.3) + random.uniform(-0.15, 0.15)))
+        else:
+            sentence_probability = 0.0
+            
+        is_sent_depressed = sentence_probability > DEPRESSION_THRESHOLD
+        sent_emoji = "😞" if is_sent_depressed else "🙂"
+        
+        sentence_analysis.append({
+            "sentence": sentence,
+            "prediction": f"{'Potentially Depressed' if is_sent_depressed else 'Not Depressed'} {sent_emoji}",
+            "probability": sentence_probability,
+            "model": f"fallback-{model_type}"
+        })
+    
+    # Calculate average score as slightly different from probability
+    average_score = min(0.95, max(0.05, probability + random.uniform(-0.05, 0.05)))
+    
+    # Determine confidence based on message length and sentence count
+    if len(sentences) >= 3 and len(message) > 100:
+        confidence = "Medium"
+    elif len(sentences) >= 5 and len(message) > 200:
+        confidence = "High"
+    else:
+        confidence = "Low"
+    
+    return {
+        "message": message,
+        "prediction": f"{prediction_text} {emoji}",
+        "probability": probability,
+        "average_score": average_score,
+        "confidence": confidence,
+        "sentence_analysis": sentence_analysis,
+        "model_used": f"fallback-{model_type}"
+    }
+
 def analyze_text(message, model_type, models, nlp, lemmatizer):
     """
     Analyze text for depression indicators
@@ -538,6 +702,15 @@ with st.spinner("Loading resources..."):
     nlp = load_spacy_model()
     lemmatizer = get_lemmatizer()
     models = load_models()
+    
+# Display fallback mode notice if needed
+if FALLBACK_MODE or models.get("fallback", False):
+    st.warning(
+        "⚠️ **Running in fallback mode**\n\n"
+        "The app is running with limited functionality because some required ML libraries "
+        "or models couldn't be loaded. You can still use the interface, but prediction "
+        "results will be simulated."
+    )
 
 # Main content - single column layout
 message = st.text_area("Enter your message:", height=150)
@@ -562,7 +735,12 @@ if st.button("Analyze"):
                 time.sleep(0.5)
                 
                 # Process the text directly without API call
-                result = analyze_text(message, model_type.lower(), models, nlp, lemmatizer)
+                if FALLBACK_MODE or models.get("fallback", False):
+                    # In fallback mode, provide a simulated response
+                    result = simulate_analysis(message, model_type.lower())
+                else:
+                    # Normal processing with ML models
+                    result = analyze_text(message, model_type.lower(), models, nlp, lemmatizer)
                 
                 # Add to history
                 st.session_state.history.append(result)

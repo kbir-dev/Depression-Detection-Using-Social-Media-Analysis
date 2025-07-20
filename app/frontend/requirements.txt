@@ -1,12 +1,13 @@
 pandas
 plotly
 streamlit
-tensorflow
-spacy
+tensorflow-cpu==2.15.0
+spacy<3.7.0
 beautifulsoup4
 nltk
-gensim
+gensim<4.3.0
 scikit-learn
 numpy
 requests
+protobuf<4.0.0
 en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.5.0/en_core_web_sm-3.5.0-py3-none-any.whl
