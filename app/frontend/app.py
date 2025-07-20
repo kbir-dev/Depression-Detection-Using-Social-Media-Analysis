@@ -16,48 +16,63 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set environment variable to control TensorFlow logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=no INFO, 2=no INFO/WARNING, 3=no INFO/WARNING/ERROR
+# Import ML libraries with error handling
+import warnings
+import os
+import re
+
+# Check if running on Streamlit Cloud
+is_streamlit_cloud = os.environ.get('STREAMLIT_SHARING_MODE') == 'streamlit_sharing'
+
+# Force fallback mode on Streamlit Cloud
+if is_streamlit_cloud:
+    ML_LIBRARIES_AVAILABLE = False
+    warnings.warn("Running on Streamlit Cloud - using fallback mode without TensorFlow")
+else:
+    # Try to import ML libraries only if not on Streamlit Cloud
+    try:
+        import tensorflow as tf
+        import numpy as np
+        from tensorflow.keras.preprocessing.sequence import pad_sequences
+        from tensorflow.keras.models import load_model
+        import nltk
+        from nltk.tokenize import word_tokenize
+        from nltk.corpus import stopwords
+        from nltk.stem import WordNetLemmatizer
+        import spacy
+        from gensim.models import Word2Vec
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        
+        # Set TensorFlow log level to suppress warnings
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        
+        # Initialize NLTK resources
+        try:
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            nltk.download('punkt')
+        try:
+            nltk.data.find('corpora/stopwords')
+        except LookupError:
+            nltk.download('stopwords')
+        try:
+            nltk.data.find('corpora/wordnet')
+        except LookupError:
+            nltk.download('wordnet')
+        
+        ML_LIBRARIES_AVAILABLE = True
+    except ImportError as e:
+        warnings.warn(f"ML libraries not available, running in fallback mode: {e}")
+        ML_LIBRARIES_AVAILABLE = False
 
 # Flag to track if we're in fallback mode
-FALLBACK_MODE = False
-
-# Try importing TensorFlow and other ML libraries
-try:
-    import tensorflow as tf
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
-    import spacy
-    import nltk
-    from nltk.tokenize import word_tokenize
-    from nltk.corpus import stopwords
-    from nltk.stem import WordNetLemmatizer
-    from gensim.models import Word2Vec
-    st.sidebar.success("✅ All ML libraries loaded successfully")
-except ImportError as e:
-    FALLBACK_MODE = True
-    st.sidebar.error(f"⚠️ Error loading ML libraries: {str(e)}")
-    st.sidebar.warning("Running in fallback mode with limited functionality")
-
-# Download required NLTK resources on app startup
-@st.cache_resource
-def download_nltk_resources():
-    if not FALLBACK_MODE:
-        try:
-            nltk.download('punkt')
-            nltk.download('stopwords')
-            nltk.download('wordnet')
-            return "NLTK resources downloaded"
-        except Exception as e:
-            logger.error(f"Error downloading NLTK resources: {str(e)}")
-            return f"Error: {str(e)}"
-    return "Skipped in fallback mode"
+FALLBACK_MODE = not ML_LIBRARIES_AVAILABLE
 
 # Load spaCy model
 @st.cache_resource
 def load_spacy_model():
     if FALLBACK_MODE:
         return None
-        
     try:
         return spacy.load("en_core_web_sm")
     except OSError as e:
