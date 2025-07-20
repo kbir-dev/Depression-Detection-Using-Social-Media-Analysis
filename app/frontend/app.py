@@ -83,17 +83,25 @@ def load_spacy_model():
         logger.error(f"Unexpected error loading spaCy model: {str(e)}")
         return None
 
-# Initialize lemmatizer
+# Get lemmatizer
 @st.cache_resource
 def get_lemmatizer():
     if FALLBACK_MODE:
-        return None
-        
+        # Return a simple fallback lemmatizer that just returns the word unchanged
+        class FallbackLemmatizer:
+            def lemmatize(self, word, *args, **kwargs):
+                return word
+        return FallbackLemmatizer()
     try:
+        from nltk.stem import WordNetLemmatizer
         return WordNetLemmatizer()
     except Exception as e:
-        logger.error(f"Error initializing lemmatizer: {str(e)}")
-        return None
+        logger.error(f"Error loading lemmatizer: {str(e)}")
+        # Return the fallback lemmatizer if there's an error
+        class FallbackLemmatizer:
+            def lemmatize(self, word, *args, **kwargs):
+                return word
+        return FallbackLemmatizer()
 
 # Define a constant
 DEPRESSION_THRESHOLD = 0.58
@@ -107,40 +115,47 @@ def load_models():
             "active_model_name": "fallback",
             "model_version": "Fallback mode - models not loaded"
         }
-        
     try:
         # Define model paths
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", "models")
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'backend', 'models')
+        lstm_model_path = os.path.join(models_dir, 'lstm_model.h5')
+        gru_model_path = os.path.join(models_dir, 'gru_model.h5')
+        word2vec_path = os.path.join(models_dir, 'word2vec_model.bin')
+        vectorizer_path = os.path.join(models_dir, 'tfidf_vectorizer.pkl')
         
-        # Check if models directory exists
-        if not os.path.exists(models_dir):
-            st.warning(f"Models directory not found at {models_dir}")
-            return {"fallback": True, "active_model_name": "fallback", "model_version": "Models directory not found"}
+        # Check if model files exist
+        if not os.path.exists(lstm_model_path):
+            logger.warning(f"LSTM model not found at {lstm_model_path}")
+            return {"fallback": True, "active_model_name": "fallback", "reason": "LSTM model file not found"}
         
-        lstm_model_path = os.path.join(models_dir, "final_lstm_model.keras")
-        gru_model_path = os.path.join(models_dir, "final_gru_model.keras")
-        word2vec_path = os.path.join(models_dir, "word2vec_model.bin") 
-        vectorizer_path = os.path.join(models_dir, "vectorizer.pkl")
+        if not os.path.exists(gru_model_path):
+            logger.warning(f"GRU model not found at {gru_model_path}")
+            return {"fallback": True, "active_model_name": "fallback", "reason": "GRU model file not found"}
         
-        # Check if all model files exist
-        missing_files = []
-        for path in [lstm_model_path, gru_model_path, word2vec_path, vectorizer_path]:
-            if not os.path.exists(path):
-                missing_files.append(os.path.basename(path))
+        if not os.path.exists(word2vec_path):
+            logger.warning(f"Word2Vec model not found at {word2vec_path}")
+            return {"fallback": True, "active_model_name": "fallback", "reason": "Word2Vec model file not found"}
         
-        if missing_files:
-            st.warning(f"Missing model files: {', '.join(missing_files)}")
-            return {"fallback": True, "active_model_name": "fallback", "model_version": "Missing model files"}
-
+        if not os.path.exists(vectorizer_path):
+            logger.warning(f"TF-IDF vectorizer not found at {vectorizer_path}")
+            return {"fallback": True, "active_model_name": "fallback", "reason": "TF-IDF vectorizer file not found"}
+        
+        import pickle
         # Load vectorizer first (smallest file)
         with open(vectorizer_path, 'rb') as f:
             vectorizer = pickle.load(f)
         
         # Load word2vec model
-        word2vec_model = Word2Vec.load(word2vec_path)
+        try:
+            from gensim.models import Word2Vec
+            word2vec_model = Word2Vec.load(word2vec_path)
+        except Exception as e:
+            logger.error(f"Error loading Word2Vec model: {str(e)}")
+            return {"fallback": True, "active_model_name": "fallback", "reason": f"Error loading Word2Vec: {str(e)}"}
         
         # Load TensorFlow models
         try:
+            import tensorflow as tf
             lstm_model = tf.keras.models.load_model(lstm_model_path)
             gru_model = tf.keras.models.load_model(gru_model_path)
             
@@ -165,7 +180,6 @@ def load_models():
             }
         except Exception as e:
             logger.error(f"Error loading TensorFlow models: {str(e)}")
-            st.warning(f"Could not load TensorFlow models: {str(e)}")
             return {
                 "word2vec_model": word2vec_model,
                 "vectorizer": vectorizer,
@@ -176,9 +190,7 @@ def load_models():
             
     except Exception as e:
         logger.error(f"Error loading models: {str(e)}")
-        st.warning(f"Error loading models: {str(e)}")
-        return {"fallback": True, "active_model_name": "fallback", "model_version": f"Error: {str(e)}"}
-
+        return {"fallback": True, "active_model_name": "fallback", "error": str(e)}
 
 def cleanText(text):
     """
@@ -711,8 +723,29 @@ st.markdown("<p class='info-text'>This tool uses AI to analyze text for potentia
 # Disclaimer
 st.markdown("<p class='disclaimer'>⚠️ <strong>Disclaimer:</strong> This tool is for educational purposes only and should not be used as a substitute for professional mental health diagnosis or treatment.</p>", unsafe_allow_html=True)
 
+# Download NLTK resources if needed
+@st.cache_resource
+def download_nltk_resources():
+    if not FALLBACK_MODE:
+        try:
+            import nltk
+            nltk.download('punkt')
+            nltk.download('stopwords')
+            nltk.download('wordnet')
+            return "NLTK resources downloaded"
+        except Exception as e:
+            logger.error(f"Error downloading NLTK resources: {str(e)}")
+            return f"Error: {str(e)}"
+    return "Skipped in fallback mode"
+
 # Load resources and models
 with st.spinner("Loading resources..."):
+    # Display fallback mode warning if needed
+    if FALLBACK_MODE:
+        st.sidebar.warning("⚠️ Running in fallback mode with limited functionality")
+        st.sidebar.info("ML models are not available. Using simulated analysis instead.")
+    
+    # Load resources that are safe to load in fallback mode
     nltk_status = download_nltk_resources()
     nlp = load_spacy_model()
     lemmatizer = get_lemmatizer()
@@ -856,3 +889,12 @@ if st.session_state.history:
             st.markdown(f"**Prediction:** {result['prediction']}")
             st.markdown(f"**Score:** {result['probability']:.1%}")
             st.markdown(f"**Model Used:** {result['model_used'].upper()}")
+
+# Add app version and mode information to sidebar footer
+st.sidebar.markdown("---")
+st.sidebar.markdown(f"**App Version**: 1.0.0")
+if FALLBACK_MODE or models.get("fallback", False):
+    st.sidebar.markdown("**Mode**: Fallback (Limited functionality)")
+else:
+    model_version = models.get("model_version", "Unknown")
+    st.sidebar.markdown(f"**Model**: {model_version}")
